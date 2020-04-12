@@ -1,0 +1,84 @@
+environment:
+    global:
+        PROJECT_NAME: miri
+    matrix:
+        - TARGET: i686-pc-windows-msvc
+
+# branches to build
+branches:
+  # whitelist
+  only:
+    - auto
+    - try
+
+matrix:
+  fast_finish: true     # set this flag to immediately finish build once one of the jobs fails.
+
+cache:
+    - '%USERPROFILE%\.cargo'
+    - '%USERPROFILE%\.rustup'
+
+install:
+    # Compute the rust version we use
+    - set /p RUSTC_HASH=<rust-version
+    # Install Rust
+    - curl -sSf --retry 3 -o rustup-init.exe https://win.rustup.rs/
+    - rustup-init.exe -y --default-host %TARGET% --default-toolchain stable --profile minimal
+    - set PATH=%USERPROFILE%\.cargo\bin;%PATH%
+    - rustup default stable
+    - rustup toolchain uninstall beta
+    - rustup update
+    # Install "master" toolchain
+    - cargo install rustup-toolchain-install-master
+    # We need to install cargo here as well or else the DLL search path inside `cargo run`
+    # will be for the wrong toolchain. (On Unix, `./miri` takes care of this, but not here.)
+    - rustup-toolchain-install-master -f -n master %RUSTC_HASH% -c rust-src -c rustc-dev -c cargo
+    - rustup default master
+    - rustc --version
+    - cargo --version
+
+build_script:
+    - set RUSTFLAGS=-C debug-assertions
+    # Build and install miri
+    - cargo build --release --all-features --all-targets --locked
+    - cargo install --all-features --force --path . --locked --offline
+
+test_script:
+    - set RUST_TEST_NOCAPTURE=1
+    - set RUST_BACKTRACE=1
+    - set CARGO_INCREMENTAL=0
+    # Test host miri: 32bit Windows
+    - cargo miri setup
+    - set MIRI_SYSROOT=%USERPROFILE%\AppData\Local\rust-lang\miri\cache\HOST
+    - cargo test --release --all-features --locked
+    - cd test-cargo-miri
+    - '"C:\msys64\mingw64\bin\python3.exe" run-test.py'
+    - cd ..
+    - ps: $env:MIRI_SYSROOT = ""
+    # Test foreign miri: 64bit Linux
+    - cargo miri setup --target x86_64-unknown-linux-gnu
+    - set MIRI_SYSROOT=%USERPROFILE%\AppData\Local\rust-lang\miri\cache
+    - set MIRI_TEST_TARGET=x86_64-unknown-linux-gnu
+    - cargo test --release --all-features --locked
+    - cd test-cargo-miri
+    - '"C:\msys64\mingw64\bin\python3.exe" run-test.py'
+    - cd ..
+    - ps: $env:MIRI_SYSROOT = ""
+    # Test foreign miri: 64bit macOS
+    - cargo miri setup --target x86_64-apple-darwin
+    - set MIRI_SYSROOT=%USERPROFILE%\AppData\Local\rust-lang\miri\cache
+    - set MIRI_TEST_TARGET=x86_64-apple-darwin
+    - cargo test --release --all-features --locked
+    - cd test-cargo-miri
+    - '"C:\msys64\mingw64\bin\python3.exe" run-test.py'
+    - cd ..
+    - ps: $env:MIRI_SYSROOT = ""
+
+after_test:
+    # Don't cache "master" toolchain, it's a waste
+    - rustup default stable
+    - rustup toolchain uninstall master
+
+notifications:
+    - provider: Email
+      on_build_success: false
